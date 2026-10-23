@@ -156,6 +156,37 @@ function step(s,t){
 function sched(){if(!ac||!snd||ac.state!=='running')return;
   while(ns<100&&base+ns*ST<ac.currentTime+.25){step(ns,Math.max(base+ns*ST,ac.currentTime));ns++}}
 function sync(){if(!ac)return;base=ac.currentTime-t+.04;ns=Math.ceil(t/ST);mg.gain.cancelScheduledValues(0);mg.gain.setValueAtTime(.8,ac.currentTime)}
+function initAudio(){
+  if(ac)return true;
+  try{
+    ac=new (window.AudioContext||window.webkitAudioContext)();
+    mg=ac.createGain();
+    const cp=ac.createDynamicsCompressor();
+    mg.connect(cp);cp.connect(ac.destination);
+    nb=ac.createBuffer(1,ac.sampleRate,ac.sampleRate);
+    const d=nb.getChannelData(0);
+    for(let i=0;i<d.length;i++)d[i]=Math.random()*2-1;
+    setInterval(sched,30);
+    return true;
+  }catch(e){return false}
+}
+async function enableSound(){
+  if(!initAudio()){snd=false;sb.textContent='SOUND UNAVAILABLE';return}
+  try{
+    snd=true;sb.textContent='SOUND: ON';
+    await ac.resume();
+    if(ac.state==='running'){sync();return}
+  }catch(e){if(!e||e.name!=='NotAllowedError'){snd=false;sb.textContent='SOUND UNAVAILABLE';return}}
+  snd=false;sb.textContent='SOUND: OFF';
+}
+function disableSound(){snd=false;sb.textContent='SOUND: OFF';if(ac)ac.suspend()}
+function onFirstInteraction(){
+  if(!ac||ac.state!=='running')enableSound();
+  if(ac&&ac.state==='running'){
+    document.removeEventListener('pointerdown',onFirstInteraction);
+    document.removeEventListener('touchstart',onFirstInteraction);
+  }
+}
 
 let t=0,last=performance.now(),play=true;
 const tl=document.getElementById('tl'),pp=document.getElementById('pp'),sb=document.getElementById('sb');
@@ -164,13 +195,9 @@ function loop(n){const dt=(n-last)/1000;last=n;if(play){t+=dt;if(t>=D){t=0;sync(
 function tog(){play=!play;pp.textContent=play?'PAUSE':'PLAY';if(ac&&snd){play?ac.resume():ac.suspend()}}
 pp.onclick=tog;document.getElementById('wrap').onclick=tog;
 document.getElementById('rp').onclick=()=>{t=0;play=true;pp.textContent='PAUSE';if(ac&&snd){ac.resume();sync()}};
-sb.onclick=()=>{
-  try{
-    if(!ac){ac=new (window.AudioContext||window.webkitAudioContext)();mg=ac.createGain();const cp=ac.createDynamicsCompressor();mg.connect(cp);cp.connect(ac.destination);
-      nb=ac.createBuffer(1,ac.sampleRate,ac.sampleRate);const d=nb.getChannelData(0);for(let i=0;i<d.length;i++)d[i]=Math.random()*2-1;setInterval(sched,30)}
-    snd=!snd;sb.textContent=snd?'SOUND: ON':'SOUND: OFF';
-    if(snd){if(play)ac.resume();sync()}else ac.suspend();
-  }catch(e){sb.textContent='SOUND UNAVAILABLE'}
-};
+sb.onclick=()=>snd?disableSound():enableSound();
+window.addEventListener('load',enableSound);
+document.addEventListener('pointerdown',onFirstInteraction,{passive:true});
+document.addEventListener('touchstart',onFirstInteraction,{passive:true});
 requestAnimationFrame(loop);
 </script></body></html>
