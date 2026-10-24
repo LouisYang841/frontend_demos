@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>Voxel Fluid</title>
+<style>
+:root{color-scheme:dark;--ink:#dce8f4;--muted:#71879b;--line:rgba(139,177,206,.14);--cyan:#72e7e1;--bg:#07111c}
+*{box-sizing:border-box}html,body{margin:0;width:100%;height:100%;overflow:hidden;background:var(--bg);font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;color:var(--ink)}
+body:before{content:"";position:fixed;inset:0;background-image:linear-gradient(var(--line) 1px,transparent 1px),linear-gradient(90deg,var(--line) 1px,transparent 1px);background-size:28px 28px;mask-image:linear-gradient(to bottom,black,transparent 95%);pointer-events:none}
+canvas{position:absolute;inset:0;width:100%;height:100%;touch-action:none;cursor:crosshair}
+.hud{position:absolute;z-index:2;pointer-events:none}.brand{top:22px;left:24px;font-size:11px;letter-spacing:.22em;color:#89a6ba}.brand b{display:block;margin-top:8px;font-size:clamp(21px,3vw,34px);font-weight:500;letter-spacing:-.07em;color:#edf8ff}.stats{top:24px;right:24px;text-align:right;font-size:10px;line-height:1.9;color:#8ba3b8}.stats strong{color:var(--cyan);font-weight:500}.hint{left:24px;bottom:24px;color:#7891a7;font-size:10px;line-height:1.9;letter-spacing:.06em}.controls{position:absolute;z-index:3;right:22px;bottom:22px;display:flex;gap:8px;align-items:center;flex-wrap:wrap;justify-content:flex-end;max-width:70%}button{font:inherit;font-size:10px;letter-spacing:.08em;color:#c8dbe9;background:rgba(10,25,38,.78);border:1px solid rgba(137,185,211,.25);padding:11px 13px;cursor:pointer;backdrop-filter:blur(12px)}button:hover,button.active{border-color:var(--cyan);color:var(--cyan);background:rgba(26,64,72,.6)}.slider{display:flex;gap:9px;align-items:center;font-size:10px;color:#91a9bb;padding:0 10px;background:rgba(10,25,38,.78);border:1px solid rgba(137,185,211,.25);height:36px}.slider input{width:80px;accent-color:#72e7e1}.crosshair{position:absolute;left:50%;top:50%;width:4px;height:4px;border-radius:50%;background:#8df7f0;box-shadow:0 0 18px #72e7e1;opacity:.7;pointer-events:none}
+@media(max-width:600px){.brand{top:16px;left:16px}.stats{top:16px;right:16px}.hint{left:16px;bottom:90px}.controls{left:12px;right:12px;bottom:12px;max-width:none;gap:5px}button{padding:10px 9px}.slider{flex:1;min-width:120px}.slider input{width:100%}}
+</style></head>
+<body><canvas id="view" aria-label="Interactive voxel fluid simulation"></canvas>
+<div class="hud brand">FIELD STUDY / 001<b>Voxel Fluid</b></div>
+<div class="hud stats">SIMULATION <strong id="state">RUNNING</strong><br>VOXELS <strong id="count">0000</strong><br>MODE <strong>3D CELLULAR FLOW</strong></div>
+<div class="hud hint">DRAG / POUR FLUID<br>CLICK / ADD A DROP<br>SPACE / PAUSE</div><div class="crosshair"></div>
+<div class="controls"><label class="slider">FLOW <input id="flow" type="range" min="1" max="8" value="4"></label><button id="pour" class="active">POUR</button><button id="pause">PAUSE</button><button id="clear">RESET</button></div>
+<script>
+(()=>{'use strict';
+const canvas=document.querySelector('#view'),ctx=canvas.getContext('2d',{alpha:true});
+const NX=24,NY=17,NZ=24,N=NX*NY*NZ;let cells=new Uint8Array(N),next=new Uint8Array(N),vel=new Int8Array(N),tick=0,paused=false,pouring=true,flow=4,acc=0,last=0,mouse={x:0,y:0,down:false};
+const idx=(x,y,z)=>(y*NZ+z)*NX+x,inside=(x,y,z)=>x>=0&&x<NX&&y>=0&&y<NY&&z>=0&&z<NZ;
+const iso={x:0,y:0,s:1};
+function resize(){const dpr=Math.min(devicePixelRatio||1,2);canvas.width=Math.round(innerWidth*dpr);canvas.height=Math.round(innerHeight*dpr);canvas.style.width=innerWidth+'px';canvas.style.height=innerHeight+'px';ctx.setTransform(dpr,0,0,dpr,0,0);iso.s=Math.min(innerWidth/(NX+NZ)*1.08,innerHeight/(NY+(NX+NZ)*.52)*1.12,19);iso.x=innerWidth/2;iso.y=innerHeight*.53+(NY*iso.s*.28)}
+function project(x,y,z){return [iso.x+(x-z)*iso.s*.86,iso.y+(x+z)*iso.s*.43-y*iso.s*.86]}
+function face(points,fill,stroke){ctx.beginPath();points.forEach((p,i)=>i?ctx.lineTo(p[0],p[1]):ctx.moveTo(p[0],p[1]));ctx.closePath();ctx.fillStyle=fill;ctx.fill();if(stroke){ctx.strokeStyle=stroke;ctx.lineWidth=.7;ctx.stroke()}}
+function drawGrid(){ctx.save();ctx.lineWidth=1;ctx.strokeStyle='rgba(108,160,192,.18)';for(let x=0;x<=NX;x+=2){let a=project(x,0,0),b=project(x,0,NZ);ctx.beginPath();ctx.moveTo(...a);ctx.lineTo(...b);ctx.stroke()}for(let z=0;z<=NZ;z+=2){let a=project(0,0,z),b=project(NX,0,z);ctx.beginPath();ctx.moveTo(...a);ctx.lineTo(...b);ctx.stroke()}ctx.restore()}
+function cube(x,y,z,v){const p=project(x,y,z),q=iso.s*.82;const top=[[p[0],p[1]-q*.86],[p[0]+q*.86,p[1]-q*.43],[p[0],p[1]],[p[0]-q*.86,p[1]-q*.43]];const left=[top[3],top[2],[top[2][0],top[2][1]+q*.86],[top[3][0],top[3][1]+q*.86]];const right=[top[2],top[1],[top[1][0],top[1][1]+q*.86],[top[2][0],top[2][1]+q*.86]];const alpha=.22+v*.11;face(left,`rgba(31,155,174,${alpha})`,`rgba(112,231,225,${.12+v*.055})`);face(right,`rgba(27,100,151,${alpha+.08})`,`rgba(112,231,225,${.12+v*.055})`);face(top,`rgba(${Math.round(40+v*10)},${Math.round(190+v*6)},${Math.round(194+v*7)},${.26+v*.1})`,`rgba(164,255,245,${.23+v*.04})`)}
+function draw(){ctx.clearRect(0,0,innerWidth,innerHeight);drawGrid();let count=0;for(let y=0;y<NY;y++)for(let x=0;x<NX;x++)for(let z=0;z<NZ;z++){let v=cells[idx(x,y,z)];if(v){cube(x,y,z,v);count++}}document.querySelector('#count').textContent=String(count).padStart(4,'0');}
+function add(x,y,z,r=2,amount=5){for(let yy=Math.max(1,y-r);yy<=Math.min(NY-1,y+r);yy++)for(let xx=Math.max(0,x-r);xx<=Math.min(NX-1,x+r);xx++)for(let zz=Math.max(0,z-r);zz<=Math.min(NZ-1,z+r);zz++){let d=(xx-x)**2+(yy-y)**2+(zz-z)**2;if(d<=r*r&&Math.random()>.18)cells[idx(xx,yy,zz)]=Math.min(7,Math.max(cells[idx(xx,yy,zz)],amount-Math.floor(d/2)))}}
+function worldAt(px,py){let best=[NX/2,NY-2,NZ/2],bd=1e9;for(let y=NY-1;y>=0;y--)for(let x=0;x<NX;x+=2)for(let z=0;z<NZ;z+=2){let p=project(x,y,z),d=(p[0]-px)**2+(p[1]-py)**2;if(d<bd){bd=d;best=[x,y,z]}}return best}
+function step(){next.fill(0);let order=[];for(let i=0;i<N;i++)if(cells[i])order.push(i); // update top-down; alternating lateral bias avoids directional artifacts
+if(tick%2)order.reverse();for(const i of order){let v=cells[i];if(!v)continue;let x=i%NX,z=Math.floor(i/NX)%NZ,y=Math.floor(i/(NX*NZ));let moved=false;
+// Gravity: prefer directly below, then diagonals
+if(y>0){let candidates=[[x,y-1,z],[x-1,y-1,z],[x+1,y-1,z],[x,y-1,z-1],[x,y-1,z+1]];for(let k=0;k<candidates.length;k++){let [a,b,c]=candidates[(k+tick)%candidates.length];if(inside(a,b,c)&&!cells[idx(a,b,c)]&&!next[idx(a,b,c)]){next[idx(a,b,c)]=v;moved=true;break}}}
+// Spread sideways when supported; slight diffusion makes the fluid settle and pool
+if(!moved){let dirs=[[1,0],[-1,0],[0,1],[0,-1]];if((x+z+tick)%2)dirs.reverse();for(const [dx,dz] of dirs){let a=x+dx,c=z+dz;if(!inside(a,y,c))continue;let j=idx(a,y,c);if(!cells[j]&&!next[j]&&Math.random()<(.10+flow*.018)){next[j]=Math.max(1,v-1);moved=true;break}}}
+if(!moved){let j=idx(x,y,z);if(!next[j])next[j]=v;else if(v>next[j])next[j]=v;}
+}cells.set(next);tick++}
+function frame(t){if(!last)last=t;let dt=Math.min(50,t-last);last=t;if(!paused){acc+=dt;let interval=90-flow*8;while(acc>interval){step();acc-=interval}if(mouse.down&&pouring){let [x,y,z]=worldAt(mouse.x,mouse.y);add(x,Math.max(2,y),z,2,6)}}draw();requestAnimationFrame(frame)}
+canvas.addEventListener('pointerdown',e=>{mouse.down=true;mouse.x=e.clientX;mouse.y=e.clientY;canvas.setPointerCapture(e.pointerId);if(pouring){let [x,y,z]=worldAt(mouse.x,mouse.y);add(x,Math.max(2,y),z,3,7)}});canvas.addEventListener('pointermove',e=>{mouse.x=e.clientX;mouse.y=e.clientY});canvas.addEventListener('pointerup',()=>mouse.down=false);canvas.addEventListener('pointercancel',()=>mouse.down=false);
+document.querySelector('#flow').addEventListener('input',e=>flow=+e.target.value);document.querySelector('#pour').onclick=()=>{pouring=!pouring;document.querySelector('#pour').classList.toggle('active',pouring);document.querySelector('#pour').textContent=pouring?'POUR':'POUR OFF'};function toggle(){paused=!paused;document.querySelector('#pause').textContent=paused?'RESUME':'PAUSE';document.querySelector('#state').textContent=paused?'PAUSED':'RUNNING'}document.querySelector('#pause').onclick=toggle;document.querySelector('#clear').onclick=()=>{cells.fill(0);next.fill(0);tick=0;paused=false;document.querySelector('#pause').textContent='PAUSE';document.querySelector('#state').textContent='RUNNING';add(NX/2,NY-3,NZ/2,2,5)};window.addEventListener('keydown',e=>{if(e.code==='Space'){e.preventDefault();toggle()}if(e.key.toLowerCase()==='r')document.querySelector('#clear').click()});window.addEventListener('resize',resize);resize();add(NX/2,NY-3,NZ/2,2,5);requestAnimationFrame(frame);
+})();
+</script></body></html>
