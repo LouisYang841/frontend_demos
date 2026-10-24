@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Grid Fluid</title>
+<style>
+:root{box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+*{box-sizing:border-box}
+html,body{height:100%;margin:0;background:#030816;color:#dfe8ff;font-family:"Helvetica Neue",Helvetica,Arial,sans-serif;overflow:hidden}
+canvas{position:fixed;inset:0;width:100%;height:100%;touch-action:none}
+</style>
+</head>
+<body><canvas id="c"></canvas>
+<script>
+/*
+  Grid Fluid — adapted from the original jellyfish.html visual system.
+  Retains its 2D character-cell grid, dark radial background, spacing,
+  cyan-blue palette and soft glow. The grid is also the simulation lattice.
+*/
+const canvas=document.getElementById('c'),ctx=canvas.getContext('2d');
+let W,H,dpr,cw,ch,cols,rows,bg,fluid,vx,vy,nvx,nvy,ndye,pressure,divergence;
+let last=0,paused=false,mouseDown=false,lastX=0,lastY=0,brush=1;
+const chars=" .,:;~=+*#%@";
+const clamp=(v,a,b)=>Math.max(a,Math.min(b,v));
+const idx=(x,y)=>y*cols+x;
+function alloc(){
+ const n=cols*rows;
+ fluid=new Float32Array(n);vx=new Float32Array(n);vy=new Float32Array(n);
+ nvx=new Float32Array(n);nvy=new Float32Array(n);ndye=new Float32Array(n);
+ pressure=new Float32Array(n);divergence=new Float32Array(n);
+}
+function makeBackground(){
+ bg=document.createElement('canvas');bg.width=W*dpr;bg.height=H*dpr;
+ const b=bg.getContext('2d');b.setTransform(dpr,0,0,dpr,0,0);
+ b.fillStyle='#02060f';b.fillRect(0,0,W,H);
+ let g=b.createRadialGradient(W/2,H*.45,0,W/2,H*.45,Math.max(W,H)*.75);
+ g.addColorStop(0,'#0a1630');g.addColorStop(.6,'#050d1f');g.addColorStop(1,'#01030a');b.fillStyle=g;b.fillRect(0,0,W,H);
+ g=b.createLinearGradient(0,H*.6,0,H);g.addColorStop(0,'rgba(20,110,140,0)');g.addColorStop(1,'rgba(30,150,175,.28)');b.fillStyle=g;b.fillRect(0,0,W,H);
+ g=b.createRadialGradient(W/2,H/2,0,W/2,H/2,Math.min(W,H)*.45);g.addColorStop(0,'rgba(70,120,220,.16)');g.addColorStop(1,'rgba(70,120,220,0)');b.fillStyle=g;b.fillRect(0,0,W,H);
+ b.strokeStyle='rgba(120,160,230,.045)';b.lineWidth=1;b.beginPath();
+ for(let x=0;x<=W;x+=cw){b.moveTo(x+.5,0);b.lineTo(x+.5,H)}
+ for(let y=0;y<=H;y+=ch){b.moveTo(0,y+.5);b.lineTo(W,y+.5)}
+ b.stroke();
+ g=b.createRadialGradient(W/2,H/2,Math.min(W,H)*.35,W/2,H/2,Math.max(W,H)*.8);g.addColorStop(0,'rgba(0,0,0,0)');g.addColorStop(1,'rgba(0,0,6,.7)');b.fillStyle=g;b.fillRect(0,0,W,H);
+}
+function resize(){
+ W=innerWidth;H=innerHeight;dpr=Math.min(2,devicePixelRatio||1);
+ canvas.width=W*dpr;canvas.height=H*dpr;
+ // Same cell dimensions as the original page.
+ cw=W<600?7:8;ch=W<600?11:13;cols=Math.ceil(W/cw);rows=Math.ceil(H/ch);
+ alloc();makeBackground();
+}
+function sample(a,x,y){
+ x=clamp(x,0,cols-1.001);y=clamp(y,0,rows-1.001);
+ const x0=x|0,y0=y|0,x1=Math.min(cols-1,x0+1),y1=Math.min(rows-1,y0+1),fx=x-x0,fy=y-y0;
+ return (a[idx(x0,y0)]*(1-fx)+a[idx(x1,y0)]*fx)*(1-fy)+(a[idx(x0,y1)]*(1-fx)+a[idx(x1,y1)]*fx)*fy;
+}
+function inject(px,py,dx,dy,amount=1){
+ const gx=px/cw,gy=py/ch,rad=Math.max(2,Math.round(brush));
+ const cx=gx|0,cy=gy|0;
+ for(let y=Math.max(0,cy-rad*2);y<Math.min(rows,cy+rad*2+1);y++)
+ for(let x=Math.max(0,cx-rad*2);x<Math.min(cols,cx+rad*2+1);x++){
+  const d2=(x-gx)**2+(y-gy)**2,fall=Math.exp(-d2/(rad*rad*1.5))*amount;
+  const i=idx(x,y);fluid[i]=Math.min(1.8,fluid[i]+fall*.9);
+  vx[i]+=dx/cw*fall*1.8;vy[i]+=dy/ch*fall*1.8;
+ }
+}
+function simulate(dt){
+ const n=fluid.length;
+ // Semi-Lagrangian advection on the same 2D character grid.
+ for(let y=0;y<rows;y++)for(let x=0;x<cols;x++){
+  const i=idx(x,y),bx=x-vx[i]*dt*9,by=y-vy[i]*dt*9;
+  ndye[i]=sample(fluid,bx,by);
+  nvx[i]=sample(vx,bx,by)*.992;
+  nvy[i]=sample(vy,bx,by)*.992+.018*dt*60;
+ }
+ fluid.set(ndye);vx.set(nvx);vy.set(nvy);
+ // A few pressure-projection iterations suppress excessive divergence.
+ for(let y=0;y<rows;y++)for(let x=0;x<cols;x++){
+  const i=idx(x,y),l=idx(Math.max(0,x-1),y),r=idx(Math.min(cols-1,x+1),y),u=idx(x,Math.max(0,y-1)),d=idx(x,Math.min(rows-1,y+1));
+  divergence[i]=-.5*((vx[r]-vx[l])+(vy[d]-vy[u]));pressure[i]=0;
+ }
+ for(let k=0;k<5;k++){
+  for(let y=1;y<rows-1;y++)for(let x=1;x<cols-1;x++){
+   const i=idx(x,y);
+   pressure[i]=(divergence[i]+pressure[idx(x-1,y)]+pressure[idx(x+1,y)]+pressure[idx(x,y-1)]+pressure[idx(x,y+1)])*.25;
+  }
+ }
+ for(let y=1;y<rows-1;y++)for(let x=1;x<cols-1;x++){
+  const i=idx(x,y);vx[i]-=.5*(pressure[idx(x+1,y)]-pressure[idx(x-1,y)]);vy[i]-=.5*(pressure[idx(x,y+1)]-pressure[idx(x,y-1)]);
+ }
+ // Mild buoyant curl + diffusion/decay keeps the fluid alive without filling the screen.
+ for(let y=1;y<rows-1;y++)for(let x=1;x<cols-1;x++){
+  const i=idx(x,y),l=idx(x-1,y),r=idx(x+1,y),u=idx(x,y-1),d=idx(x,y+1);
+  const curl=(vy[r]-vy[l]-vx[d]+vx[u])*.5;
+  vx[i]+=clamp(curl,-1,1)*.018;
+  vy[i]-=Math.abs(curl)*.012;
+  fluid[i]=clamp(fluid[i]*.996+(fluid[l]+fluid[r]+fluid[u]+fluid[d]-4*fluid[i])*.018,0,1.8);
+ }
+ // Reflect velocity at edges; dye fades very slowly.
+ for(let x=0;x<cols;x++){vy[idx(x,0)]*=-.2;vy[idx(x,rows-1)]*=-.2;fluid[idx(x,rows-1)]*=.985;}
+ for(let y=0;y<rows;y++){vx[idx(0,y)]*=-.2;vx[idx(cols-1,y)]*=-.2;}
+}
+function render(t){
+ ctx.setTransform(1,0,0,1,0,0);ctx.clearRect(0,0,canvas.width,canvas.height);ctx.drawImage(bg,0,0);
+ ctx.setTransform(dpr,0,0,dpr,0,0);
+ ctx.textAlign='center';ctx.textBaseline='middle';ctx.font=(ch-2)+'px ui-monospace,Menlo,Consolas,monospace';
+ // Render the simulation as changing characters and soft luminous cell fills.
+ for(let y=0;y<rows;y++)for(let x=0;x<cols;x++){
+  const i=idx(x,y),d=fluid[i];if(d<.018)continue;
+  const speed=Math.hypot(vx[i],vy[i]),v=clamp(d*.9+speed*.11,0,1);
+  const r=Math.round(40+75*v),g=Math.round(105+130*v),b=Math.round(165+90*v);
+  const h=(Math.sin(x*12.989+y*78.233+Math.floor(t/180))*.5+.5);
+  if(d>.24){ctx.fillStyle=`rgba(${r*.55|0},${g*.65|0},${b},${Math.min(.38,d*.28)})`;ctx.fillRect(x*cw,y*ch,cw,ch);}
+  ctx.fillStyle=`rgba(${r},${g},${b},${clamp(.18+d*.72,0,.94)})`;
+  const ci=clamp(Math.floor(v*(chars.length-1)+(speed>.35?2:0)),0,chars.length-1);
+  let c=chars[ci];
+  if(speed>.65)c=h>.5?'*':'+';
+  else if(d>.8)c=h>.55?'#':'@';
+  ctx.fillText(c,x*cw+cw/2,y*ch+ch/2+.5);
+ }
+ // Glow pass, same restrained bloom aesthetic as the original.
+ ctx.globalCompositeOperation='lighter';ctx.globalAlpha=.28;ctx.filter=`blur(${Math.round(7*dpr)}px)`;
+ // Keep glow inexpensive: render only a modest sampled subset of active cells.
+ ctx.font=(ch-2)+'px ui-monospace,Menlo,Consolas,monospace';
+ for(let y=0;y<rows;y+=2)for(let x=0;x<cols;x+=2){const d=fluid[idx(x,y)];if(d>.42){ctx.fillStyle=`rgba(65,155,255,${Math.min(.32,d*.2)})`;ctx.fillText('*',x*cw+cw/2,y*ch+ch/2);}}
+ ctx.filter='none';ctx.globalAlpha=1;ctx.globalCompositeOperation='source-over';
+}
+function frame(ms){
+ const t=ms/1000,dt=Math.min(.025,last?(ms-last)/1000:.016);last=ms;
+ if(!paused){simulate(dt);render(ms);}
+ requestAnimationFrame(frame);
+}
+canvas.addEventListener('pointerdown',e=>{mouseDown=true;lastX=e.clientX;lastY=e.clientY;inject(lastX,lastY,0,0,1.3);canvas.setPointerCapture?.(e.pointerId);});
+canvas.addEventListener('pointermove',e=>{if(mouseDown){const dx=e.clientX-lastX,dy=e.clientY-lastY;inject(e.clientX,e.clientY,dx,dy,1.15);lastX=e.clientX;lastY=e.clientY;}});
+canvas.addEventListener('pointerup',()=>mouseDown=false);canvas.addEventListener('pointercancel',()=>mouseDown=false);
+canvas.addEventListener('dblclick',()=>{fluid.fill(0);vx.fill(0);vy.fill(0);});
+addEventListener('keydown',e=>{if(e.code==='Space'){paused=!paused;e.preventDefault();}if(e.key==='r'||e.key==='R'){fluid.fill(0);vx.fill(0);vy.fill(0);}});
+addEventListener('resize',resize);resize();
+// Start with a small plume, so the simulation is visible immediately.
+inject(W*.5,H*.55,1,-2,1.1);inject(W*.5,H*.58,-1,-1,.8);
+requestAnimationFrame(frame);
+</script></body></html>
